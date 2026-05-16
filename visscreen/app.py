@@ -1,9 +1,21 @@
+import logging
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Input, Static, Label, Button
 from textual.containers import Container, Vertical, Horizontal
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from .manager import ScreenManager
+from .config import ConfigManager
+from .renderers import TileRenderer
+
+# Setup logging
+logging.basicConfig(
+    filename="visscreen.log",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filemode="w"
+)
+logger = logging.getLogger("visscreen")
 
 class NewSessionModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
@@ -55,6 +67,11 @@ class SessionTile(Vertical):
         self.session_name = session_name
         self.state = state
         self.time = time
+        self.offset_y = 0
+        self.offset_x = 0
+        self.dy = 1 # vertical direction
+        self.dx = 1 # horizontal direction
+        self.raw_content = ""
 
     def compose(self) -> ComposeResult:
         yield Static(id="info-bar")
@@ -62,15 +79,65 @@ class SessionTile(Vertical):
 
     def on_mount(self) -> None:
         self.update_snapshot()
+        self.set_interval(0.5, self.animate_roving)
 
     def update_snapshot(self) -> None:
-        content = ScreenManager.get_session_snapshot(self.session_id)
-        # Truncate to ensure it fits well in the tile
-        lines = content.splitlines()[:20]
-        self.query_one("#snapshot-text").update("\n".join(lines))
+        self.raw_content = ScreenManager.get_session_snapshot(self.session_id)
+        self.render_content()
+
+    def render_content(self) -> None:
+        mode = getattr(self.app, "grid_mode", "zoom")
+
+        # Get dimensions of the snapshot widget
+        snapshot_widget = self.query_one("#snapshot-text")
+        # Default to 25x60 if size not yet available
+        h = snapshot_widget.content_size.height or 25
+        w = snapshot_widget.content_size.width or 60
+
+        if mode == "minimap":
+            display_text = TileRenderer.render_minimap(self.raw_content)
+        elif mode == "roving":
+            display_text = TileRenderer.render_roving(
+                self.raw_content, height=h, width=w, 
+                offset_y=self.offset_y, offset_x=self.offset_x
+            )
+        else: # zoom
+            display_text = TileRenderer.render_zoom(self.raw_content, height=h)
+
+        snapshot_widget.update(display_text)
         self.query_one("#info-bar").update(
-            f"[bold] {self.session_id}.{self.session_name} [/bold] | {self.state} | {self.time}"
+            f"[bold] {self.session_id}.{self.session_name} [/bold] | {self.state} | {mode.upper()}"
         )
+
+
+    def animate_roving(self) -> None:
+        if getattr(self.app, "grid_mode", "zoom") == "roving":
+            lines = self.raw_content.splitlines()
+            if not lines:
+                return
+            
+            # Content dimensions
+            max_y = len(lines)
+            max_x = max(len(l) for l in lines) if lines else 0
+            
+            # Viewport dimensions
+            snapshot_widget = self.query_one("#snapshot-text")
+            h = snapshot_widget.content_size.height or 25
+            w = snapshot_widget.content_size.width or 60
+
+            # Bounce vertically
+            if self.offset_y + h >= max_y or self.offset_y <= 0:
+                self.dy *= -1
+            
+            # Bounce horizontally
+            if self.offset_x + w >= max_x or self.offset_x <= 0:
+                self.dx *= -1
+                
+            # Move
+            self.offset_y = max(0, min(max_y - h, self.offset_y + self.dy))
+            self.offset_x = max(0, min(max_x - w, self.offset_x + self.dx))
+            
+            self.render_content()
 
 class VisScreenApp(App):
     TITLE = "VisScreen"
@@ -93,7 +160,7 @@ class VisScreenApp(App):
     }
     SessionTile {
         border: solid yellow;
-        height: 28;
+        height: 32;
         padding: 0;
         margin: 1;
     }
@@ -113,8 +180,8 @@ class VisScreenApp(App):
         width: 100%;
     }
     #snapshot-text {
-        height: 23;
-        padding: 1;
+        height: 27;
+        padding: 0 1;
         overflow-y: hidden;
     }
     DataTable {
@@ -153,6 +220,7 @@ class VisScreenApp(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("v", "toggle_view", "Toggle View"),
+        Binding("m", "cycle_mode", "Cycle Grid Mode"),
         Binding("up", "move_focus_up", "Move Up", show=False),
         Binding("down", "move_focus_down", "Move Down", show=False),
         Binding("left", "move_focus_left", "Move Left", show=False),
@@ -183,11 +251,24 @@ class VisScreenApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.config_manager = ConfigManager()
+        self.grid_mode = self.config_manager.get("default_grid_mode")
+        
         table = self.query_one(DataTable)
         table.add_columns("ID", "Name", "Time", "State")
         table.cursor_type = "row"
         self.refresh_sessions()
         self.set_interval(5.0, self.refresh_snapshots)
+
+    def action_cycle_mode(self) -> None:
+        modes = ["zoom", "minimap", "roving"]
+        current_idx = modes.index(self.grid_mode)
+        self.grid_mode = modes[(current_idx + 1) % len(modes)]
+        self.config_manager.set("default_grid_mode", self.grid_mode)
+        logger.info(f"Cycled grid mode to: {self.grid_mode}")
+        
+        for tile in self.query(SessionTile):
+            tile.render_content()
 
     def refresh_sessions(self) -> None:
         table = self.query_one(DataTable)

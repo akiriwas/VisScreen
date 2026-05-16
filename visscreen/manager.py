@@ -45,10 +45,16 @@ class ScreenManager:
         try:
             # screen -S <id> -X hardcopy <file>
             subprocess.run(['screen', '-S', session_id, '-X', 'hardcopy', temp_name], check=False)
-            if os.path.exists(temp_name) and os.path.getsize(temp_name) > 0:
-                with open(temp_name, 'r', errors='replace') as f:
-                    content = f.read()
-                return content
+            
+            # screen -X is async; wait up to 0.5s for content to appear
+            import time
+            for _ in range(5):
+                if os.path.exists(temp_name) and os.path.getsize(temp_name) > 0:
+                    with open(temp_name, 'r', errors='replace') as f:
+                        content = f.read()
+                    return content
+                time.sleep(0.1)
+                
             return "No content available or session inactive."
         except Exception as e:
             return f"Error capturing snapshot: {str(e)}"
