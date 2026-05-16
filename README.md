@@ -2,7 +2,7 @@
 
 VisScreen is a modern Terminal User Interface (TUI) for managing GNU `screen` sessions on Linux. It eliminates the need to manually list and copy session names, providing a visual, searchable, and interactive experience for rejoining, creating, and terminating screens.
 
-![VisScreen TUI](https://via.placeholder.com/800x400?text=VisScreen+TUI+Placeholder)
+![VisScreen TUI](./res/screenshot.png)
 
 ## Features
 
