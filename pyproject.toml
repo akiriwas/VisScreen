@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visscreen"
+version = "0.1.0"
+description = "A TUI for managing GNU screen sessions"
+authors = [
+    { name = "Gemini CLI", email = "gemini-cli@google.com" }
+]
+dependencies = [
+    "textual>=0.50.0",
+]
+requires-python = ">=3.8"
+
+[project.scripts]
+visscreen = "visscreen.app:run"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
