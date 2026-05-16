@@ -46,12 +46,76 @@ class KillConfirmModal(ModalScreen[bool]):
         else:
             self.dismiss(False)
 
+class SessionTile(Vertical):
+    can_focus = True
+
+    def __init__(self, session_id: str, session_name: str, state: str, time: str, **kwargs):
+        super().__init__(**kwargs)
+        self.session_id = session_id
+        self.session_name = session_name
+        self.state = state
+        self.time = time
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="info-bar")
+        yield Static(id="snapshot-text")
+
+    def on_mount(self) -> None:
+        self.update_snapshot()
+
+    def update_snapshot(self) -> None:
+        content = ScreenManager.get_session_snapshot(self.session_id)
+        # Truncate to ensure it fits well in the tile
+        lines = content.splitlines()[:20]
+        self.query_one("#snapshot-text").update("\n".join(lines))
+        self.query_one("#info-bar").update(
+            f"[bold] {self.session_id}.{self.session_name} [/bold] | {self.state} | {self.time}"
+        )
+
 class VisScreenApp(App):
     TITLE = "VisScreen"
     SUB_TITLE = "Manage GNU Screen Sessions"
     CSS = """
     #main-container {
         height: 1fr;
+    }
+    #list-view {
+        height: 1fr;
+    }
+    #grid-view {
+        height: 1fr;
+        layout: grid;
+        grid-size: 2;
+        grid-gutter: 1;
+        display: none;
+        overflow-y: scroll;
+        padding: 1;
+    }
+    SessionTile {
+        border: solid yellow;
+        height: 28;
+        padding: 0;
+        margin: 1;
+    }
+    SessionTile:focus {
+        border: double green;
+    }
+    SessionTile:focus #info-bar {
+        background: $accent;
+        color: $text-primary;
+    }
+    #info-bar {
+        height: 3;
+        background: $primary;
+        color: $text;
+        padding: 0 1;
+        content-align: center middle;
+        width: 100%;
+    }
+    #snapshot-text {
+        height: 23;
+        padding: 1;
+        overflow-y: hidden;
     }
     DataTable {
         height: 1fr;
@@ -88,6 +152,11 @@ class VisScreenApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("v", "toggle_view", "Toggle View"),
+        Binding("up", "move_focus_up", "Move Up", show=False),
+        Binding("down", "move_focus_down", "Move Down", show=False),
+        Binding("left", "move_focus_left", "Move Left", show=False),
+        Binding("right", "move_focus_right", "Move Right", show=False),
         Binding("enter", "rejoin", "Rejoin", show=False),
         Binding("d", "detach_rejoin", "Detach & Rejoin", show=True),
         Binding("n", "new_session", "New Session", show=True),
@@ -101,9 +170,13 @@ class VisScreenApp(App):
                 Input(placeholder="Search sessions...", id="search-input"),
                 id="search-container"
             ),
-            Horizontal(
-                DataTable(id="sessions-table"),
-                Static(id="detail-pane"),
+            Container(
+                Horizontal(
+                    DataTable(id="sessions-table"),
+                    Static(id="detail-pane"),
+                    id="list-view"
+                ),
+                Container(id="grid-view"),
                 id="main-container"
             )
         )
@@ -114,6 +187,7 @@ class VisScreenApp(App):
         table.add_columns("ID", "Name", "Time", "State")
         table.cursor_type = "row"
         self.refresh_sessions()
+        self.set_interval(5.0, self.refresh_snapshots)
 
     def refresh_sessions(self) -> None:
         table = self.query_one(DataTable)
@@ -121,6 +195,8 @@ class VisScreenApp(App):
         table.clear()
         
         self.sessions = ScreenManager.list_sessions()
+        
+        # Update List View
         for s in self.sessions:
             if search_value in s.name.lower() or search_value in s.id.lower():
                 table.add_row(s.id, s.name, s.time, s.state, key=s.id)
@@ -129,6 +205,41 @@ class VisScreenApp(App):
             self.query_one("#detail-pane").update("No sessions found.")
         else:
             self.update_detail_pane()
+
+        # Update Grid View structure
+        grid = self.query_one("#grid-view")
+        grid.remove_children()
+        for s in self.sessions:
+            if search_value in s.name.lower() or search_value in s.id.lower():
+                grid.mount(SessionTile(s.id, s.name, s.state, s.time))
+
+    def refresh_snapshots(self) -> None:
+        # Only poll snapshots if Grid View is visible
+        grid = self.query_one("#grid-view")
+        if grid.display:
+            for tile in grid.query(SessionTile):
+                tile.update_snapshot()
+
+    def action_toggle_view(self) -> None:
+        list_view = self.query_one("#list-view")
+        grid_view = self.query_one("#grid-view")
+        
+        if not list_view.display:
+            # Switch to List View
+            list_view.display = True
+            grid_view.display = False
+            self.query_one(DataTable).focus()
+        else:
+            # Switch to Grid View
+            list_view.display = False
+            grid_view.display = True
+            # Focus the first tile if available
+            tiles = list(grid_view.query(SessionTile))
+            if tiles:
+                tiles[0].focus()
+            else:
+                grid_view.focus()
+            self.refresh_snapshots() # Immediate update when switching to grid
 
     def update_detail_pane(self) -> None:
         table = self.query_one(DataTable)
@@ -153,30 +264,60 @@ class VisScreenApp(App):
         if event.input.id == "search-input":
             self.refresh_sessions()
 
+    def move_grid_focus(self, delta: int) -> None:
+        grid = self.query_one("#grid-view")
+        tiles = list(grid.query(SessionTile))
+        if not tiles:
+            return
+        
+        current_index = -1
+        if isinstance(self.focused, SessionTile):
+            try:
+                current_index = tiles.index(self.focused)
+            except ValueError:
+                pass
+        elif self.focused is None or self.focused == grid:
+            # If nothing focused in grid, start at first tile
+            tiles[0].focus()
+            return
+            
+        new_index = max(0, min(len(tiles) - 1, current_index + delta))
+        tiles[new_index].focus()
+
     def action_refresh(self) -> None:
         self.refresh_sessions()
 
+    def action_move_focus_up(self) -> None:
+        if not self.query_one("#list-view").display:
+            self.move_grid_focus(-2)
+
+    def action_move_focus_down(self) -> None:
+        if not self.query_one("#list-view").display:
+            self.move_grid_focus(2)
+
+    def action_move_focus_left(self) -> None:
+        if not self.query_one("#list-view").display:
+            self.move_grid_focus(-1)
+
+    def action_move_focus_right(self) -> None:
+        if not self.query_one("#list-view").display:
+            self.move_grid_focus(1)
+
     def action_rejoin(self) -> None:
-        table = self.query_one(DataTable)
-        if table.cursor_row is not None:
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            session_id = row_key.value
+        session_id = self.get_active_session_id()
+        if session_id:
             self.exit()
             ScreenManager.rejoin(session_id)
 
     def action_detach_rejoin(self) -> None:
-        table = self.query_one(DataTable)
-        if table.cursor_row is not None:
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            session_id = row_key.value
+        session_id = self.get_active_session_id()
+        if session_id:
             self.exit()
             ScreenManager.rejoin(session_id, detach=True)
 
     def action_kill_session(self) -> None:
-        table = self.query_one(DataTable)
-        if table.cursor_row is not None:
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            session_id = row_key.value
+        session_id = self.get_active_session_id()
+        if session_id:
             session_name = next((s.name for s in self.sessions if s.id == session_id), "")
             
             def check_kill(should_kill: bool) -> None:
@@ -185,6 +326,19 @@ class VisScreenApp(App):
                     self.refresh_sessions()
             
             self.push_screen(KillConfirmModal(session_id, session_name), check_kill)
+
+    def get_active_session_id(self) -> str | None:
+        list_view = self.query_one("#list-view")
+        if list_view.display:
+            table = self.query_one(DataTable)
+            if table.cursor_row is not None:
+                row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+                return str(row_key.value)
+        else:
+            focused = self.focused
+            if isinstance(focused, SessionTile):
+                return focused.session_id
+        return None
 
     def action_new_session(self) -> None:
         def create_new(name: str | None) -> None:

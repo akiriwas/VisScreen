@@ -33,5 +33,21 @@ class TestScreenManager(unittest.TestCase):
         sessions = ScreenManager.list_sessions()
         self.assertEqual(len(sessions), 0)
 
+    @patch('subprocess.run')
+    @patch('os.path.exists')
+    @patch('os.path.getsize')
+    @patch('builtins.open', new_callable=unittest.mock.mock_open, read_data="Snapshot content")
+    @patch('os.remove')
+    def test_get_session_snapshot(self, mock_remove, mock_open, mock_getsize, mock_exists, mock_run):
+        mock_exists.return_value = True
+        mock_getsize.return_value = 100
+        
+        content = ScreenManager.get_session_snapshot("1234")
+        
+        self.assertEqual(content, "Snapshot content")
+        mock_run.assert_called_once()
+        self.assertIn("hardcopy", mock_run.call_args[0][0])
+        mock_remove.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
